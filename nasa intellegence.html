@@ -1,0 +1,193 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>NASA Meteor Defence — Live Upgrade</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<style>
+html,body{margin:0;height:100%;background:#000;color:#e6eef8;font-family:Inter,system-ui;overflow:hidden}
+canvas{position:fixed;left:0;top:0;width:100%;height:100%;z-index:0}
+header{position:fixed;top:0;left:0;right:0;height:56px;background:rgba(0,0,0,0.6);color:#fff;display:flex;align-items:center;justify-content:center;z-index:20}
+#controls,#rightPanel{position:fixed;top:70px;width:360px;background:rgba(0,0,0,0.45);border-radius:12px;padding:12px;z-index:10;box-shadow:0 0 10px #000a}
+#controls{left:16px;}#rightPanel{right:16px;}
+button{background:#ff7a18;color:#fff;border:none;border-radius:8px;padding:8px 10px;cursor:pointer;margin:4px 0;}
+input{width:100%;padding:6px;border-radius:8px;border:none;background:#111;color:#eee;margin-top:4px;}
+#map{height:200px;border-radius:8px;margin-top:8px;overflow:hidden}
+#message{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);padding:10px 16px;border-radius:10px;display:none;z-index:25}
+.small{font-size:12px;color:#9fb;}
+</style>
+</head>
+<body>
+<canvas id="solarCanvas"></canvas>
+
+<header><h2>NASA Meteor Defence — Live by Techy Person</h2></header>
+
+<div id="controls">
+  <button id="fetchNow">Fetch NASA Live</button>
+  <button id="autoToggle">Auto Meteors: ON</button>
+  <div style="margin-top:8px;">
+    <b>NASA API Key</b>
+    <input id="apiKey" placeholder="Enter NASA API Key (or DEMO_KEY)" />
+  </div>
+  <div style="margin-top:8px;">
+    <b>NASA Data Assistant</b>
+    <input id="aiInput" placeholder="Enter planet / asteroid / date" />
+    <button id="aiQuery">Ask NASA + Wiki</button>
+    <div id="aiOut" style="font-size:13px;margin-top:6px;color:#9fb;">AI Output...</div>
+  </div>
+  <div style="margin-top:8px;">
+    <b>Upcoming Events</b>
+    <div id="events" style="font-size:13px;color:#9fb;max-height:160px;overflow:auto;">None yet.</div>
+  </div>
+</div>
+
+<div id="rightPanel">
+  <b>Live Map</b>
+  <div id="map"></div>
+  <div id="recordOut" class="small">None selected.</div>
+</div>
+
+<div id="message">Message</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+/*-------------------- SETUP --------------------*/
+const canvas=document.getElementById('solarCanvas');
+const ctx=canvas.getContext('2d');
+function resize(){canvas.width=innerWidth;canvas.height=innerHeight;}
+resize();window.addEventListener('resize',resize);
+function showMsg(t,ms=2500){const m=document.getElementById('message');m.textContent=t;m.style.display='block';setTimeout(()=>m.style.display='none',ms);}
+function addEventLine(t){const e=document.getElementById('events');const d=document.createElement('div');d.textContent='• '+t;e.insertBefore(d,e.firstChild);}
+
+/*-------------------- SOLAR SYSTEM --------------------*/
+const planets=[
+ {name:'Sun',r:36,color:'#ffdd33',dist:0,speed:0},
+ {name:'Mercury',r:5,dist:70,speed:0.004,color:'#aaa'},
+ {name:'Venus',r:8,dist:110,speed:0.0032,color:'#d9b45a'},
+ {name:'Earth',r:12,dist:160,speed:0.0024,color:'#1e90ff'},
+ {name:'Mars',r:8,dist:210,speed:0.002,color:'#d35b47'},
+ {name:'Jupiter',r:20,dist:280,speed:0.0015,color:'#e1c38b'},
+ {name:'Saturn',r:18,dist:350,speed:0.0012,color:'#e8d18c'},
+ {name:'Uranus',r:14,dist:420,speed:0.0011,color:'#6dd5f9'},
+ {name:'Neptune',r:14,dist:480,speed:0.0010,color:'#4663f9'}
+];
+for(const p of planets){p.angle=Math.random()*Math.PI*2;}
+
+/*-------------------- METEORS & MISSILES --------------------*/
+let objects={meteors:[],missiles:[],explosions:[]};
+function spawnMeteor(){
+  const side=Math.floor(Math.random()*4);
+  let x,y;if(side===0){x=Math.random()*canvas.width;y=-40;}
+  else if(side===1){x=canvas.width+40;y=Math.random()*canvas.height;}
+  else if(side===2){x=Math.random()*canvas.width;y=canvas.height+40;}
+  else{x=-40;y=Math.random()*canvas.height;}
+  const earth=planets.find(p=>p.name==='Earth');
+  const tx=earth.x+(Math.random()*60-30),ty=earth.y+(Math.random()*60-30);
+  const ang=Math.atan2(ty-y,tx-x);const sp=2+Math.random()*3;
+  objects.meteors.push({x,y,vx:Math.cos(ang)*sp,vy:Math.sin(ang)*sp,size:6+Math.random()*8});
+}
+function launchMissile(target){
+  const earth=planets.find(p=>p.name==='Earth');
+  const startX=earth.x,startY=earth.y+earth.r+10;
+  const ang=Math.atan2(target.y-startY,target.x-startX);
+  const sp=8+Math.random()*2;
+  objects.missiles.push({x:startX,y:startY,angle:ang,speed:sp,target});
+}
+function createExplosion(x,y){
+  for(let i=0;i<60;i++){
+    objects.explosions.push({x,y,vx:(Math.random()-0.5)*10,vy:(Math.random()-0.5)*10,life:800+Math.random()*400,age:0,r:2+Math.random()*3});
+  }
+}
+
+/*-------------------- DRAW --------------------*/
+function drawOrbits(cx,cy){ctx.save();ctx.strokeStyle='rgba(150,200,255,0.1)';for(const p of planets){if(p.dist>0){ctx.beginPath();ctx.arc(cx,cy,p.dist,0,Math.PI*2);ctx.stroke();}}ctx.restore();}
+function drawPlanets(cx,cy){for(const p of planets){if(p.dist>0)p.angle+=p.speed;p.x=cx+Math.cos(p.angle)*p.dist;p.y=cy+Math.sin(p.angle)*p.dist;ctx.beginPath();ctx.fillStyle=p.color;ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();}}
+function drawMeteors(){for(const m of objects.meteors){ctx.beginPath();const g=ctx.createRadialGradient(m.x,m.y,0,m.x,m.y,m.size*2);g.addColorStop(0,'#fff');g.addColorStop(0.4,'#ffb200');g.addColorStop(1,'rgba(255,80,0,0)');ctx.fillStyle=g;ctx.arc(m.x,m.y,m.size,0,Math.PI*2);ctx.fill();}}
+function drawMissiles(){for(const ms of objects.missiles){ctx.save();ctx.translate(ms.x,ms.y);ctx.rotate(ms.angle);ctx.fillStyle='white';ctx.beginPath();ctx.moveTo(0,-5);ctx.lineTo(10,0);ctx.lineTo(0,5);ctx.closePath();ctx.fill();ctx.restore();}}
+function drawExplosions(dt){for(let i=objects.explosions.length-1;i>=0;i--){const p=objects.explosions[i];p.x+=p.vx*(dt*0.05);p.y+=p.vy*(dt*0.05);p.age+=dt;const a=1-p.age/p.life;if(a<=0){objects.explosions.splice(i,1);continue;}ctx.globalAlpha=a;ctx.fillStyle=`rgba(255,${120+Math.random()*100},0,${a})`;ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;}}
+
+/*-------------------- PHYSICS --------------------*/
+function update(dt){
+  const earth=planets.find(p=>p.name==='Earth');
+  for(const m of objects.meteors){m.x+=m.vx*(dt*0.06);m.y+=m.vy*(dt*0.06);const dx=m.x-earth.x,dy=m.y-earth.y;const dist=Math.sqrt(dx*dx+dy*dy);if(dist<earth.r+60&&!m.marked){m.marked=true;launchMissile(m);} }
+  for(const ms of objects.missiles){const dx=ms.target.x-ms.x,dy=ms.target.y-ms.y;const ang=Math.atan2(dy,dx);ms.x+=Math.cos(ang)*ms.speed;ms.y+=Math.sin(ang)*ms.speed;if(dx*dx+dy*dy<400&&!ms.hit){ms.hit=true;ms.target.remove=true;createExplosion(ms.target.x,ms.target.y);addEventLine('Meteor Destroyed');showMsg('💥 Meteor Destroyed!');}}
+  objects.meteors=objects.meteors.filter(m=>!m.remove);objects.missiles=objects.missiles.filter(m=>!m.hit);
+}
+
+/*-------------------- LOOP --------------------*/
+let last=performance.now();
+function loop(now){const dt=now-last;last=now;ctx.clearRect(0,0,canvas.width,canvas.height);const cx=canvas.width/2,cy=canvas.height/2;drawOrbits(cx,cy);drawPlanets(cx,cy);drawMeteors();drawMissiles();drawExplosions(dt);update(dt);if(Math.random()<0.015)spawnMeteor();requestAnimationFrame(loop);}
+requestAnimationFrame(loop);
+
+/*-------------------- MAP + NASA --------------------*/
+let map=L.map('map').setView([20,0],2);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+let meteorMarkers=[];
+
+/* FETCH LIVE DATA */
+async function fetchNASAData(){
+  const key=document.getElementById('apiKey').value.trim()||'DEMO_KEY';
+  showMsg('Fetching live NASA data...');
+  try{
+    const fireball=await fetch('https://ssd-api.jpl.nasa.gov/fireball.api?limit=10');
+    const fbData=await fireball.json();
+    const s=new Date().toISOString().slice(0,10);
+    const e=new Date(Date.now()+3*86400000).toISOString().slice(0,10);
+    const neo=await fetch(`https://api.nasa.gov/neo/rest/v1/feed?start_date=${s}&end_date=${e}&api_key=${key}`);
+    const neoData=await neo.json();
+
+    meteorMarkers.forEach(m=>map.removeLayer(m)); meteorMarkers=[];
+
+    if(fbData.data){
+      fbData.data.forEach(f=>{
+        const lat=f[3],lon=f[4];
+        if(lat&&lon){
+          const marker=L.circleMarker([lat,lon],{radius:6,color:'#ff6600',fillColor:'#ffb200',fillOpacity:0.8}).addTo(map);
+          marker.bindPopup(`<b>Fireball</b><br>Date: ${f[0]}<br>Velocity: ${f[7]} km/s`);
+          meteorMarkers.push(marker);
+          addEventLine(`Fireball ${f[0]} (${lat},${lon})`);
+        }
+      });
+    }
+
+    if(neoData&&neoData.near_earth_objects){
+      for(const d of Object.keys(neoData.near_earth_objects)){
+        neoData.near_earth_objects[d].forEach(o=>{
+          addEventLine(`NEO ${o.name} miss ${Math.round(o.close_approach_data[0].miss_distance.kilometers)} km`);
+        });
+      }
+    }
+
+    showMsg('NASA live data updated!');
+  }catch(e){
+    showMsg('⚠️ Failed to fetch NASA data');
+  }
+}
+
+/*-------------------- AUTO REFRESH --------------------*/
+setInterval(fetchNASAData,180000); // every 3 minutes
+document.getElementById('fetchNow').onclick=fetchNASAData;
+
+/*-------------------- AI QUERY --------------------*/
+async function fetchWiki(q){
+  try{const r=await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/'+encodeURIComponent(q));if(!r.ok)return null;const js=await r.json();return js.extract||null;}catch{return null;}
+}
+document.getElementById('aiQuery').onclick=async()=>{
+  const q=document.getElementById('aiInput').value.trim();
+  const out=document.getElementById('aiOut');
+  if(!q){out.textContent='Type a planet / asteroid / date';return;}
+  out.textContent='Searching NASA + Wiki...';
+  const w=await fetchWiki(q);
+  const key=document.getElementById('apiKey').value.trim()||'DEMO_KEY';
+  const s=new Date().toISOString().slice(0,10);
+  const e=new Date(Date.now()+3*86400000).toISOString().slice(0,10);
+  const r=await fetch(`https://api.nasa.gov/neo/rest/v1/feed?start_date=${s}&end_date=${e}&api_key=${key}`);
+  const neo=await r.json();
+  let res=w?'<b>'+q+'</b>: '+w+'<hr>':'';
+  if(neo&&neo.near_earth_objects){for(const d of Object.keys(neo.near_earth_objects)){for(const o of neo.near_earth_objects[d]){if(o.name.toLowerCase().includes(q.toLowerCase())){res+='<div>NASA NEO '+o.name+' miss '+Math.round(o.close_approach_data[0].miss_distance.kilometers)+' km</div>';}}}}
+  out.innerHTML=res||'No NASA or Wiki data found.';
+};
+</script>
+</body>
+</html>
